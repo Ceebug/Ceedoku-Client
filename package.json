@@ -1,5 +1,5 @@
 {
-  "name": "Ceedoku_Client",
+  "name": "ceedoku-client",
   "version": "1.0.0",
   "description": "Ceedoku Client",
   "author": "Ceebug",
@@ -22,13 +22,45 @@
     "productName": "Ceedoku Client",
 
     "win": {
-      "target": "nsis",
+      "target": {
+        "target": "nsis",
+        "arch": [
+          "x64",
+          "ia32",
+          "arm64"
+        ]
+      },
       "icon": "assets/ceedoku.ico"
+    },
+
+    "linux": {
+      "target": {
+        "target": "AppImage",
+        "arch": [
+          "x64",
+          "arm64",
+          "armv7l"
+        ]
+      },
+      "icon": "assets/ceedoku.png",
+      "category": "Game"
+    },
+
+    "mac": {
+      "target": {
+        "target": "dmg",
+        "arch": [
+          "x64",
+          "arm64"
+        ]
+      },
+      "icon": "assets/ceedoku.png",
+      "category": "public.app-category.games"
     },
 
     "nsis": {
       "shortcutName": "Ceedoku",
-      "artifactName": "Ceedoku Installer ${version}",
+      "artifactName": "Ceedoku Installer ${version} ${arch}.${ext}",
       "include": "installer.nsh"
     },
 
