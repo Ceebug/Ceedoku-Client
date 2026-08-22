@@ -7,7 +7,7 @@ on:
       - "v*"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
 
@@ -37,6 +37,8 @@ jobs:
 
       - name: Build
         run: npx electron-builder --win nsis --${{ matrix.arch }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload installer
         uses: actions/upload-artifact@v4
@@ -71,6 +73,8 @@ jobs:
 
       - name: Build
         run: npx electron-builder --linux AppImage --${{ matrix.arch }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload AppImage
         uses: actions/upload-artifact@v4
@@ -98,6 +102,8 @@ jobs:
 
       - name: Build
         run: npx electron-builder --mac dmg --universal
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload DMG
         uses: actions/upload-artifact@v4
