@@ -1,0 +1,45 @@
+{
+  "name": "Ceedoku_Client",
+  "version": "1.0.0",
+  "description": "Ceedoku Client",
+  "author": "Ceebug",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder"
+  },
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "electron": "^43.4.1",
+    "electron-builder": "^26.15.3"
+  },
+  "dependencies": {
+    "cheerio": "^1.2.0"
+  },
+  "build": {
+    "appId": "au.ceebug.ceedoku",
+    "productName": "Ceedoku Client",
+
+    "win": {
+      "target": "nsis",
+      "icon": "assets/ceedoku.ico"
+    },
+
+    "nsis": {
+      "shortcutName": "Ceedoku",
+      "artifactName": "Ceedoku Installer ${version}",
+      "include": "installer.nsh"
+    },
+
+    "fileAssociations": [
+      {
+        "ext": "csf",
+        "name": "Ceedoku Save File",
+        "description": "Ceedoku Save File",
+        "role": "Editor",
+        "icon": "assets/csf.ico"
+      }
+    ]
+  }
+}
