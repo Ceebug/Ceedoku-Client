@@ -86,7 +86,7 @@ src/js/puzzle-worker.js
 
 Ceedoku Client is designed to keep a previously downloaded version available.
 
-If an update fails:
+Error handling flow
 
 ```text
 Latest version
@@ -112,7 +112,7 @@ For more information about the format, see the [Ceedoku CSF specification](https
 
 ## License
 
-See [`LICENCE`] for licence information.
+See [`LICENCE`](./LICENCE) for licence information.
 
 ---
 
