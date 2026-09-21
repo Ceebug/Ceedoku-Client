@@ -247,7 +247,7 @@ if (!gotTheLock) {
 
         // Puzzle worker is required even though
         // it isn't referenced by a src attribute.
-        resources.add("src/js/puzzle-worker.js");
+        resources.add("src/js/puzzleGen.js");
 
 
         for (const resource of resources) {
