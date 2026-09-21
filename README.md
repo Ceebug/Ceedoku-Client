@@ -6,12 +6,11 @@ Ceedoku Client packages the Ceedoku web game into a lightweight desktop applicat
 
 ## Features
 
-* **Desktop Ceedoku** — Run Ceedoku as a standalone application.
-* **Automatic updates** — The client downloads the latest version of Ceedoku when it starts.
-* **Local caching** — A working copy of Ceedoku is stored locally for faster loading.
-* **Offline fallback** — If an update cannot be downloaded, the client can continue using the last cached version.
-* **CSF support** — Open Ceedoku Save Format (`.csf`) files directly with the client.
-* **Single instance** — Opening the client again while it is already running forwards supported arguments to the existing window.
+- **Desktop Ceedoku** — Run Ceedoku as a standalone application.
+- **Automatic updates** — The client downloads the latest version of Ceedoku when it starts.
+- **Offline fallback** — If an update cannot be downloaded, the client can continue using the last cached version.
+- **`.CSF` support** — Open Ceedoku Save Format (`.csf`) files directly with the client.
+- **Single instance** — Opening the client again while it is already running forwards supported arguments to the existing window.
 
 ## How it works
 
@@ -43,9 +42,9 @@ The client is an Electron application. Its main process is responsible for:
 
 ## Requirements
 
-* [Node.js](https://nodejs.org/)
-* npm
-* Electron
+- [Node.js](https://nodejs.org/)
+- npm
+- Electron
 
 ## Development
 
@@ -72,7 +71,7 @@ npm start
 
 The client pulls its game files from the Ceedoku website:
 
-`https://ceedoku.github.io/`
+[`https://ceedoku.github.io`](https://ceedoku.github.io/)
 
 Only files hosted by the Ceedoku website are accepted by the cache downloader. This keeps the client tied to the official Ceedoku deployment rather than arbitrary external resources.
 
