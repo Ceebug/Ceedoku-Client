@@ -1,4 +1,4 @@
-name: Build Ceedoku Client
+name: Build Ceedoku Client Installers
 
 on:
   workflow_dispatch:
@@ -140,26 +140,22 @@ jobs:
       - macos
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Download all installers
         uses: actions/download-artifact@v4
         with:
           path: installers
           merge-multiple: true
 
-      - name: Create ZIP
+      - name: Get version
+        id: version
         run: |
-          cd installers
-          zip ../Ceedoku-Client.zip \
-            Ceedoku-Installer_Linux-arm32.AppImage \
-            Ceedoku-Installer_Linux-arm64.AppImage \
-            Ceedoku-Installer_Linux-x64.AppImage \
-            Ceedoku-Installer_MacOS-universal.dmg \
-            Ceedoku-Installer_Windows-arm64.exe \
-            Ceedoku-Installer_Windows-x64.exe \
-            Ceedoku-Installer_Windows-x86.exe
+          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
 
-      - name: Upload combined ZIP
+      - name: Upload combined installers
         uses: actions/upload-artifact@v4
         with:
-          name: Ceedoku-Client
-          path: Ceedoku-Client.zip
+          name: Ceedoku Client Installers - v${{ steps.version.outputs.version }}
+          path: installers/*
