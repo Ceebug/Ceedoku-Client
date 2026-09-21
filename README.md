@@ -111,7 +111,7 @@ For more information about the format, see the [Ceedoku CSF specification](https
 
 ## License
 
-See [`LICENCE`](/LICENCE) for licence information.
+See the [`LICENSE`](./LICENSE) file for licence information.
 
 ---
 
