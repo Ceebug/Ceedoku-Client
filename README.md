@@ -40,13 +40,13 @@ The client is an Electron application. Its main process is responsible for:
 * Managing the application's single-instance lock
 * Providing an offline fallback
 
-## Requirements
+## Development
+
+### Requirements
 
 - [Node.js](https://nodejs.org/)
-- npm
-- Electron
-
-## Development
+- [npm](https://www.npmjs.com/)
+- [Electron](https://www.electronjs.org/)
 
 Clone the repository:
 
