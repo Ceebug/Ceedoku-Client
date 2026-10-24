@@ -1,0 +1,19 @@
+CEEDOKU CLIENT BRAND ASSET LICENSE
+
+Copyright (c) 2026 Ceebug
+
+The source code text, underlying code logic, installers, configuration scripts, and functional files of this desktop client project are open source under the terms of the MIT License. This License governs exclusively the official project branding assets (collectively, the "Brand Assets"), including the project name "Ceedoku," the "Ceedoku Client" title identity, official application icon files, repository banners, and layout typography graphics created by the copyright holder. Underlying source code text, package pathways, manifest parameters, and internal app dependencies are expressly excluded from the definition of Brand Assets.
+
+Subject to the terms and conditions of this License, permission is hereby granted to any person to use and display the Brand Assets solely for non-commercial promotional, review, or community informational purposes.
+
+This permission is strictly subject to the following express conditions:
+
+1. COMMERCIAL RESTRICTIONS. The Brand Assets shall not be used, sold, leased, or sublicensed for any commercial purpose, monetization, or paid distribution, including use on physical merchandise, without prior written authorization from the copyright holder.
+
+2. FRAUD AND MALICIOUS USE PROHIBITION. The Brand Assets shall not be used in connection with any desktop software, installer build, distribution platform, repository, or service configured for malicious activity, phishing, or user deception. 
+
+3. DERIVATIVE WORKS AND FORKS. If the underlying desktop client repository is forked, modified, or redistributed to create an alternative app variant, client, engine, or tool that incorporates hacks, exploits, malware, or tracking scripts, all visual Brand Assets (including the official application icons, logo banners, and title image files) must be completely removed from the file structure, distribution packages, desktop shortcuts, and visual user interfaces prior to distribution. This restriction applies strictly to graphical brand assets and does not prohibit the inclusion of the project name within raw source code strings or compilation configuration metadata.
+
+4. NO IMPLIED ENDORSEMENT. Use of the Brand Assets does not grant permission to imply an official endorsement, partnership, or affiliation with the original Ceedoku project or its maintainers.
+
+THE BRAND ASSETS ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY.
