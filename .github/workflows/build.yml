@@ -54,9 +54,7 @@ jobs:
         run: npm ci
 
       - name: Build
-        run: npx electron-builder --win nsis --${{ matrix.arch }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --win nsis --${{ matrix.arch }} --publish never
 
       - name: Rename installer
         shell: bash
@@ -128,9 +126,7 @@ jobs:
         run: npm ci
 
       - name: Build
-        run: npx electron-builder --linux AppImage --${{ matrix.arch }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --linux AppImage --${{ matrix.arch }} --publish never
 
       - name: Rename installer
         run: |
@@ -176,9 +172,7 @@ jobs:
         run: npm ci
 
       - name: Build
-        run: npx electron-builder --mac dmg --universal
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --mac dmg --universal --publish never
 
       - name: Rename installer
         run: |
