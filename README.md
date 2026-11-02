@@ -7,26 +7,27 @@ Ceedoku Client packages the Ceedoku web game into a lightweight desktop applicat
 ## Features
 
 - **Desktop Ceedoku** — Run Ceedoku as a standalone application.
-- **Automatic updates** — The client downloads the latest version of Ceedoku when it starts.
+- **Automatic updates** — A separate native updater checks for Ceedoku Client releases and refreshes the Ceedoku game files.
 - **Offline fallback** — If an update cannot be downloaded, the client can continue using the last cached version.
 - **`.CSF` support** — Open Ceedoku Save Format (`.csf`) files directly with the client.
 - **Single instance** — Opening the client again while it is already running forwards supported arguments to the existing window.
 
 ## How it works
 
-Ceedoku Client downloads the files used by the Ceedoku website and stores them in its local application cache.
+The standalone native updater opens before the game and displays the same update window while checking for a newer Ceedoku Client release and updating the Ceedoku game files. Client installers from new version tags are published as GitHub Releases. After updating the client, the updater starts the updated client to refresh the game cache, then opens the game.
 
 On startup, the client:
 
-1. Checks for a newer version of Ceedoku.
-2. Downloads the required website files.
-3. Places the downloaded files into a temporary update directory.
-4. Replaces the previous cached version with the new version.
-5. Loads the cached Ceedoku files in Electron.
+1. Shows the standalone native update window.
+2. Checks GitHub Releases for a newer client version and installs the matching platform update when available.
+3. Starts a hidden client process to download the current website files.
+4. Opens the game using the cached files.
 
-If the update fails but a previous cached version exists, the client uses that cached version instead.
+If the website update fails but a previous cached version exists, the client uses that cached version instead. The native updater remains visible during both kinds of updates.
 
 If no cached version exists, the client displays an offline page.
+
+In development, the Electron client uses the local `assets/loading.html` loading screen. Installed releases use the native updater window during startup instead.
 
 ## Project structure
 
@@ -40,6 +41,10 @@ The client is an Electron application. Its main process is responsible for:
 * Managing the application's single-instance lock
 * Providing an offline fallback
 
+The native updater source is in `updater/`. It is compiled separately for each release platform and packaged outside the Electron application bundle so it can remain running while a client update is installed.
+
+Push a version tag matching `package.json` (for example, `v1.2.0`) to build installers and publish them as GitHub Release assets for automatic client updates.
+
 ## Development
 
 ### Requirements
@@ -47,6 +52,7 @@ The client is an Electron application. Its main process is responsible for:
 - [Node.js](https://nodejs.org/)
 - [npm](https://www.npmjs.com/)
 - [Electron](https://www.electronjs.org/)
+- [Rust and Cargo](https://www.rust-lang.org/tools/install) (for building the native updater)
 
 Clone the repository:
 

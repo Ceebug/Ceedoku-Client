@@ -1,0 +1,554 @@
+use eframe::egui;
+use reqwest::blocking::Client;
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
+use std::env;
+use std::fs;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
+
+const RELEASES_URL: &str = "https://api.github.com/repos/ceebug/ceedoku-client/releases/latest";
+
+#[derive(Clone, Debug)]
+struct Options {
+    app_path: PathBuf,
+    app_version: String,
+    user_data: PathBuf,
+    icon_path: PathBuf,
+    app_args: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct Release {
+    tag_name: String,
+    assets: Vec<ReleaseAsset>,
+}
+
+#[derive(Deserialize)]
+struct ReleaseAsset {
+    name: String,
+    browser_download_url: String,
+    digest: Option<String>,
+}
+
+enum UiMessage {
+    Status(String),
+    Warning(String),
+    Complete,
+    Error(String),
+}
+
+struct UpdaterApp {
+    receiver: Receiver<UiMessage>,
+    launch_state: Arc<AtomicBool>,
+    status: String,
+    error: Option<String>,
+    warning: Option<String>,
+    finished: bool,
+}
+
+impl UpdaterApp {
+    fn new(receiver: Receiver<UiMessage>, launch_state: Arc<AtomicBool>) -> Self {
+        Self {
+            receiver,
+            launch_state,
+            status: "Checking for updates...".to_owned(),
+            error: None,
+            warning: None,
+            finished: false,
+        }
+    }
+}
+
+impl Drop for UpdaterApp {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.launch_state.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
+impl eframe::App for UpdaterApp {
+    fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
+        while let Ok(message) = self.receiver.try_recv() {
+            match message {
+                UiMessage::Status(status) => self.status = status,
+                UiMessage::Warning(warning) => self.warning = Some(warning),
+                UiMessage::Complete => {
+                    self.launch_state.store(true, Ordering::Relaxed);
+                    context.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                UiMessage::Error(error) => {
+                    self.error = Some(error);
+                    self.finished = true;
+                }
+            }
+        }
+
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::new()
+                    .fill(egui::Color32::from_rgb(16, 20, 24))
+                    .inner_margin(24),
+            )
+            .show(context, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(12.0);
+                    ui.heading(
+                        egui::RichText::new("Ceedoku is updating")
+                            .size(24.0)
+                            .color(egui::Color32::from_rgb(235, 240, 244)),
+                    );
+                    ui.add_space(10.0);
+                    ui.label(
+                        egui::RichText::new("It will launch when it is completed.")
+                            .size(15.0)
+                            .color(egui::Color32::from_rgb(180, 191, 199)),
+                    );
+                    ui.add_space(22.0);
+
+                    if self.finished {
+                        if let Some(error) = &self.error {
+                            ui.label(
+                                egui::RichText::new(error)
+                                    .color(egui::Color32::from_rgb(255, 150, 140)),
+                            );
+                            ui.add_space(12.0);
+                            ui.horizontal(|ui| {
+                                if ui.button("Launch current version").clicked() {
+                                    self.launch_state.store(true, Ordering::Relaxed);
+                                    context.send_viewport_cmd(egui::ViewportCommand::Close);
+                                }
+                                if ui.button("Quit").clicked() {
+                                    context.send_viewport_cmd(egui::ViewportCommand::Close);
+                                }
+                            });
+                        }
+                    } else {
+                        ui.add(egui::Spinner::new().size(26.0));
+                        ui.add_space(12.0);
+                        ui.label(
+                            egui::RichText::new(&self.status)
+                                .color(egui::Color32::from_rgb(149, 164, 176)),
+                        );
+                        if let Some(warning) = &self.warning {
+                            ui.add_space(8.0);
+                            ui.label(
+                                egui::RichText::new(warning)
+                                    .color(egui::Color32::from_rgb(255, 190, 130)),
+                            );
+                        }
+                    }
+                });
+            });
+
+        context.request_repaint_after(Duration::from_millis(100));
+    }
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let options = parse_options()?;
+    let icon = load_icon(&options.icon_path)?;
+    let (sender, receiver) = mpsc::channel();
+    let worker_options = options.clone();
+    let worker_sender = sender.clone();
+    let launch_state = Arc::new(AtomicBool::new(false));
+    let app_launch_state = launch_state.clone();
+
+    let worker = thread::spawn(move || {
+        if let Err(error) = run_updates(&worker_options, &worker_sender) {
+            let _ = worker_sender.send(UiMessage::Error(error.to_string()));
+            return;
+        }
+        let _ = worker_sender.send(UiMessage::Complete);
+    });
+
+    let native_options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_title("Ceedoku is updating")
+            .with_inner_size([440.0, 250.0])
+            .with_min_inner_size([400.0, 230.0])
+            .with_resizable(false)
+            .with_icon(icon),
+        ..Default::default()
+    };
+
+    eframe::run_native(
+        "Ceedoku is updating",
+        native_options,
+        Box::new(move |_| Ok(Box::new(UpdaterApp::new(receiver, app_launch_state)))),
+    )?;
+    if worker.join().is_err() {
+        return Err("native update worker stopped unexpectedly".into());
+    }
+
+    if launch_state.load(Ordering::Relaxed) {
+        launch_game(&options)?;
+    }
+    Ok(())
+}
+
+fn parse_options() -> Result<Options, Box<dyn std::error::Error>> {
+    let mut args = env::args().skip(1);
+    let mut app_path = None;
+    let mut app_version = None;
+    let mut user_data = None;
+    let mut icon_path = None;
+    let mut app_args = Vec::new();
+
+    while let Some(argument) = args.next() {
+        match argument.as_str() {
+            "--app-path" => app_path = args.next().map(PathBuf::from),
+            "--app-version" => app_version = args.next(),
+            "--user-data" => user_data = args.next().map(PathBuf::from),
+            "--icon" => icon_path = args.next().map(PathBuf::from),
+            "--app-arg" => {
+                if let Some(value) = args.next() {
+                    app_args.push(value);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(Options {
+        app_path: app_path.ok_or("missing --app-path")?,
+        app_version: app_version.ok_or("missing --app-version")?,
+        user_data: user_data.ok_or("missing --user-data")?,
+        icon_path: icon_path.ok_or("missing --icon")?,
+        app_args,
+    })
+}
+
+fn load_icon(path: &Path) -> Result<egui::IconData, Box<dyn std::error::Error>> {
+    let image = image::load_from_memory(&fs::read(path)?)?.into_rgba8();
+    let (width, height) = image.dimensions();
+    Ok(egui::IconData {
+        rgba: image.into_raw(),
+        width,
+        height,
+    })
+}
+
+fn run_updates(
+    options: &Options,
+    sender: &Sender<UiMessage>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let client = Client::builder()
+        .user_agent("Ceedoku-Client-Updater")
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(900))
+        .build()?;
+
+    let _ = sender.send(UiMessage::Status(
+        "Checking for a client update...".to_owned(),
+    ));
+    match check_client_update(&client, options, sender) {
+        Ok(()) => {}
+        Err(error) => {
+            eprintln!("Client update could not be completed: {error}");
+            let _ = sender.send(UiMessage::Warning(format!(
+                "Client update unavailable; continuing with the installed version: {error}"
+            )));
+            let _ = sender.send(UiMessage::Status("Preparing Ceedoku...".to_owned()));
+        }
+    }
+
+    let _ = sender.send(UiMessage::Status(
+        "Updating Ceedoku game files...".to_owned(),
+    ));
+    let status = Command::new(&options.app_path)
+        .args(&options.app_args)
+        .arg("--ceedoku-content-update")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+
+    if !status.success() {
+        return Err(format!("Ceedoku content update exited with {status}").into());
+    }
+    Ok(())
+}
+
+fn check_client_update(
+    client: &Client,
+    options: &Options,
+    sender: &Sender<UiMessage>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let release: Release = client
+        .get(RELEASES_URL)
+        .send()?
+        .error_for_status()?
+        .json()?;
+    let latest = release.tag_name.trim_start_matches('v');
+    if !is_newer_version(&options.app_version, latest)? {
+        return Ok(());
+    }
+
+    let asset_name = asset_name(env::consts::OS, env::consts::ARCH)
+        .ok_or("unsupported platform for automatic client updates")?;
+    let asset = release
+        .assets
+        .iter()
+        .find(|asset| asset.name == asset_name)
+        .ok_or_else(|| format!("Release {} has no {asset_name} asset", release.tag_name))?;
+
+    let _ = sender.send(UiMessage::Status(format!(
+        "Downloading Ceedoku Client {latest}..."
+    )));
+    let response = client
+        .get(&asset.browser_download_url)
+        .send()?
+        .error_for_status()?;
+    let update_dir = options.user_data.join("updates");
+    fs::create_dir_all(&update_dir)?;
+    let installer = update_dir.join(&asset.name);
+    download_asset(
+        response,
+        &installer,
+        &asset.name,
+        asset.digest.as_deref(),
+        sender,
+    )?;
+
+    let _ = sender.send(UiMessage::Status(
+        "Installing the Ceedoku Client update...".to_owned(),
+    ));
+    install_update(options, &installer)?;
+    Ok(())
+}
+
+fn download_asset(
+    mut response: reqwest::blocking::Response,
+    destination: &Path,
+    asset_name: &str,
+    expected_digest: Option<&str>,
+    sender: &Sender<UiMessage>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let total_bytes = response.content_length();
+    let mut file = fs::File::create(destination)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0; 64 * 1024];
+    let mut downloaded = 0u64;
+    let mut next_status = 16 * 1024 * 1024;
+
+    loop {
+        let count = response.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        file.write_all(&buffer[..count])?;
+        hasher.update(&buffer[..count]);
+        downloaded += count as u64;
+
+        if downloaded >= next_status {
+            let progress = total_bytes
+                .map(|total| format!(" ({:.0}%)", downloaded as f64 * 100.0 / total as f64))
+                .unwrap_or_default();
+            let _ = sender.send(UiMessage::Status(format!(
+                "Downloading {asset_name}{}...",
+                progress
+            )));
+            next_status += 16 * 1024 * 1024;
+        }
+    }
+
+    let actual_digest = format!("{:x}", hasher.finalize());
+    if let Some(expected) = expected_digest.and_then(|value| value.strip_prefix("sha256:")) {
+        if actual_digest != expected {
+            let _ = fs::remove_file(destination);
+            return Err("Downloaded client update failed its SHA-256 check".into());
+        }
+    }
+    Ok(())
+}
+
+fn is_newer_version(current: &str, latest: &str) -> Result<bool, semver::Error> {
+    Ok(semver::Version::parse(latest.trim_start_matches('v'))?
+        > semver::Version::parse(current.trim_start_matches('v'))?)
+}
+
+fn asset_name(os: &str, architecture: &str) -> Option<&'static str> {
+    match os {
+        "windows" => match architecture {
+            "x86" => Some("Ceedoku-Installer_Windows-x86.exe"),
+            "aarch64" => Some("Ceedoku-Installer_Windows-arm64.exe"),
+            "x86_64" => Some("Ceedoku-Installer_Windows-x64.exe"),
+            _ => None,
+        },
+        "macos" => Some("Ceedoku-Installer_MacOS-universal.dmg"),
+        "linux" => match architecture {
+            "arm" => Some("Ceedoku-Installer_Linux-arm32.AppImage"),
+            "aarch64" => Some("Ceedoku-Installer_Linux-arm64.AppImage"),
+            "x86_64" => Some("Ceedoku-Installer_Linux-x64.AppImage"),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn install_update(_options: &Options, installer: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let status = Command::new(installer)
+        .arg("/S")
+        .stdin(Stdio::null())
+        .status()?;
+    require_success(status)
+}
+
+#[cfg(target_os = "linux")]
+fn install_update(options: &Options, installer: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let current = env::var_os("APPIMAGE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| options.app_path.clone());
+    let staging = current.with_extension("AppImage.update");
+    fs::copy(installer, &staging)?;
+    fs::set_permissions(&staging, fs::Permissions::from_mode(0o755))?;
+    fs::rename(staging, current)?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn install_update(options: &Options, installer: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let mount = options.user_data.join("updates").join("mount");
+    fs::create_dir_all(&mount)?;
+    let attach = Command::new("hdiutil")
+        .args(["attach", "-nobrowse", "-readonly", "-mountpoint"])
+        .arg(&mount)
+        .arg(installer)
+        .status()?;
+    require_success(attach)?;
+
+    let result = (|| {
+        let source = fs::read_dir(&mount)?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| path.extension().is_some_and(|ext| ext == "app"))
+            .ok_or("release disk image did not contain an app bundle")?;
+        let target = options
+            .app_path
+            .ancestors()
+            .nth(3)
+            .ok_or("could not locate the installed app bundle")?;
+        let stage = options.user_data.join("updates").join("Ceedoku Client.app");
+        if stage.exists() {
+            fs::remove_dir_all(&stage)?;
+        }
+        let copy = Command::new("ditto").arg(&source).arg(&stage).status()?;
+        require_success(copy)?;
+        let backup = target.with_extension("app.previous");
+        let script = options.user_data.join("updates").join("install-update.sh");
+        let script_contents = format!(
+            "set -e\nrm -rf {backup}\nmv {target} {backup}\nif ditto {stage} {target}; then\n  rm -rf {backup}\nelse\n  mv {backup} {target}\n  exit 1\nfi\n",
+            backup = shell_quote(&backup),
+            target = shell_quote(target),
+            stage = shell_quote(&stage)
+        );
+        fs::write(&script, script_contents)?;
+        let install = Command::new("sh").arg(&script).status()?;
+        if !install.success() {
+            let command = format!("sh {}", shell_quote(&script));
+            let apple_script = format!(
+                "do shell script \"{}\" with administrator privileges",
+                command.replace('\\', "\\\\").replace('"', "\\\"")
+            );
+            let elevated_install = Command::new("osascript")
+                .args(["-e", &apple_script])
+                .status()?;
+            require_success(elevated_install)?;
+        }
+        Ok::<(), Box<dyn std::error::Error>>(())
+    })();
+
+    let _ = Command::new("hdiutil")
+        .args(["detach", "-force"])
+        .arg(&mount)
+        .status();
+    result
+}
+
+#[cfg(target_os = "macos")]
+fn shell_quote(path: &Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
+}
+
+fn require_success(status: ExitStatus) -> Result<(), Box<dyn std::error::Error>> {
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("installer exited with {status}").into())
+    }
+}
+
+fn launch_game(options: &Options) -> Result<(), Box<dyn std::error::Error>> {
+    let mut command = Command::new(&options.app_path);
+    command
+        .args(&options.app_args)
+        .arg("--ceedoku-skip-updater")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(appimage) = env::var_os("APPIMAGE") {
+            command.env("APPIMAGE", appimage);
+        }
+    }
+
+    command.spawn()?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{asset_name, is_newer_version};
+
+    #[test]
+    fn compares_release_versions_without_tag_prefix() {
+        assert!(is_newer_version("1.0.1", "v1.1.0").unwrap());
+        assert!(!is_newer_version("v1.1.0", "1.1.0").unwrap());
+    }
+
+    #[test]
+    fn selects_release_asset_for_each_supported_platform() {
+        assert_eq!(
+            asset_name("windows", "x86_64"),
+            Some("Ceedoku-Installer_Windows-x64.exe")
+        );
+        assert_eq!(
+            asset_name("windows", "x86"),
+            Some("Ceedoku-Installer_Windows-x86.exe")
+        );
+        assert_eq!(
+            asset_name("windows", "aarch64"),
+            Some("Ceedoku-Installer_Windows-arm64.exe")
+        );
+        assert_eq!(
+            asset_name("macos", "aarch64"),
+            Some("Ceedoku-Installer_MacOS-universal.dmg")
+        );
+        assert_eq!(
+            asset_name("linux", "arm"),
+            Some("Ceedoku-Installer_Linux-arm32.AppImage")
+        );
+        assert_eq!(
+            asset_name("linux", "aarch64"),
+            Some("Ceedoku-Installer_Linux-arm64.AppImage")
+        );
+        assert_eq!(
+            asset_name("linux", "x86_64"),
+            Some("Ceedoku-Installer_Linux-x64.AppImage")
+        );
+        assert_eq!(asset_name("freebsd", "x86_64"), None);
+    }
+}

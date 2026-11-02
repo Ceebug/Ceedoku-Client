@@ -1,4 +1,5 @@
 const { app, BrowserWindow, Menu } = require("electron");
+const { spawn } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 const https = require("https");
@@ -11,6 +12,8 @@ const UPDATE_DIR = path.join(CACHE_DIR, "update");
 
 let mainWindow;
 let pendingCSF = null;
+const CONTENT_UPDATE_ARG = "--ceedoku-content-update";
+const SKIP_UPDATER_ARG = "--ceedoku-skip-updater";
 
 
 // Get a CSF file path from command-line arguments
@@ -359,6 +362,8 @@ if (!gotTheLock) {
             height: 700,
 
             maximizable: true,
+            show: false,
+            backgroundColor: "#101418",
 
             icon: path.join(
                 __dirname,
@@ -387,9 +392,21 @@ if (!gotTheLock) {
 
         mainWindow.maximize();
 
+        mainWindow.once("ready-to-show", () => {
+            mainWindow.show();
+        });
 
-        const result =
-            await prepareCache();
+        const cachePromise = prepareCache();
+
+        await mainWindow.loadFile(
+            path.join(
+                __dirname,
+                "assets",
+                "loading.html"
+            )
+        );
+
+        const result = await cachePromise;
 
 
         if (result.offline) {
@@ -424,7 +441,112 @@ if (!gotTheLock) {
     }
 
 
-    app.whenReady().then(() => {
+    function startNativeUpdater() {
+
+        try {
+            const helperName =
+                process.platform === "win32"
+                    ? "ceedoku-updater.exe"
+                    : "ceedoku-updater";
+            const bundledHelper =
+                path.join(
+                    process.resourcesPath,
+                    "updater",
+                    helperName
+                );
+            const helperDirectory =
+                path.join(
+                    app.getPath("userData"),
+                    "updater"
+                );
+            const helperPath =
+                path.join(
+                    helperDirectory,
+                    `${app.getVersion()}-${helperName}`
+                );
+
+            if (!fs.existsSync(bundledHelper)) {
+                console.error(
+                    "Native updater is missing:",
+                    bundledHelper
+                );
+                return false;
+            }
+
+            fs.mkdirSync(helperDirectory, {
+                recursive: true
+            });
+
+            if (!fs.existsSync(helperPath)) {
+                fs.copyFileSync(
+                    bundledHelper,
+                    helperPath
+                );
+
+                if (process.platform !== "win32") {
+                    fs.chmodSync(helperPath, 0o700);
+                }
+            }
+
+            const appPath =
+                process.platform === "linux" && process.env.APPIMAGE
+                    ? process.env.APPIMAGE
+                    : app.getPath("exe");
+
+            const args = [
+                "--app-path",
+                appPath,
+                "--app-version",
+                app.getVersion(),
+                "--user-data",
+                app.getPath("userData"),
+                "--icon",
+                path.join(
+                    process.resourcesPath,
+                    "assets",
+                    "ceedoku.png"
+                )
+            ];
+
+            if (pendingCSF) {
+                args.push("--app-arg", pendingCSF);
+            }
+
+            return new Promise(resolve => {
+                const updater = spawn(
+                    helperPath,
+                    args,
+                    {
+                        detached: true,
+                        stdio: "ignore"
+                    }
+                );
+
+                updater.once("spawn", () => {
+                    updater.unref();
+                    resolve(true);
+                });
+
+                updater.once("error", error => {
+                    console.error(
+                        "Could not start the native updater:",
+                        error
+                    );
+                    resolve(false);
+                });
+            });
+        } catch (error) {
+            console.error(
+                "Could not start the native updater:",
+                error
+            );
+            return false;
+        }
+
+    }
+
+
+    app.whenReady().then(async () => {
 
         Menu.setApplicationMenu(null);
 
@@ -433,6 +555,37 @@ if (!gotTheLock) {
             getCSFPath(
                 process.argv
             );
+
+
+        if (
+            process.argv.includes(CONTENT_UPDATE_ARG)
+        ) {
+
+            prepareCache().then(() => {
+                app.exit(0);
+            }).catch(error => {
+                console.error(
+                    "Failed to update Ceedoku content:",
+                    error
+                );
+                app.exit(1);
+            });
+
+            return;
+
+        }
+
+
+        if (
+            app.isPackaged &&
+            !process.argv.includes(SKIP_UPDATER_ARG) &&
+            await startNativeUpdater()
+        ) {
+
+            app.quit();
+            return;
+
+        }
 
 
         createWindow().catch(error => {

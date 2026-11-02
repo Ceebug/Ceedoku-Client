@@ -20,10 +20,13 @@ jobs:
         include:
           - arch: x64
             filename: Ceedoku-Installer_Windows-x64.exe
+            rust_target: x86_64-pc-windows-msvc
           - arch: ia32
             filename: Ceedoku-Installer_Windows-x86.exe
+            rust_target: i686-pc-windows-msvc
           - arch: arm64
             filename: Ceedoku-Installer_Windows-arm64.exe
+            rust_target: aarch64-pc-windows-msvc
 
     steps:
       - name: Checkout
@@ -34,6 +37,18 @@ jobs:
         with:
           node-version: 20
           cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Build native updater
+        shell: pwsh
+        run: |
+          cargo build --manifest-path updater/Cargo.toml --release --target ${{ matrix.rust_target }}
+          New-Item -ItemType Directory -Force updater-bin | Out-Null
+          Copy-Item "updater/target/${{ matrix.rust_target }}/release/ceedoku-updater.exe" "updater-bin/ceedoku-updater.exe"
 
       - name: Install dependencies
         run: npm ci
@@ -64,10 +79,13 @@ jobs:
         include:
           - arch: armv7l
             filename: Ceedoku-Installer_Linux-arm32.AppImage
+            rust_target: armv7-unknown-linux-gnueabihf
           - arch: arm64
             filename: Ceedoku-Installer_Linux-arm64.AppImage
+            rust_target: aarch64-unknown-linux-gnu
           - arch: x64
             filename: Ceedoku-Installer_Linux-x64.AppImage
+            rust_target: x86_64-unknown-linux-gnu
 
     steps:
       - name: Checkout
@@ -78,6 +96,33 @@ jobs:
         with:
           node-version: 20
           cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Configure cross-compiler
+        if: matrix.arch != 'x64'
+        run: |
+          sudo apt-get update
+          if [ "${{ matrix.arch }}" = "arm64" ]; then
+            sudo apt-get install -y gcc-aarch64-linux-gnu
+            echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+            echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+            echo "AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar" >> "$GITHUB_ENV"
+          else
+            sudo apt-get install -y gcc-arm-linux-gnueabihf
+            echo "CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc" >> "$GITHUB_ENV"
+            echo "CC_armv7_unknown_linux_gnueabihf=arm-linux-gnueabihf-gcc" >> "$GITHUB_ENV"
+            echo "AR_armv7_unknown_linux_gnueabihf=arm-linux-gnueabihf-ar" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build native updater
+        run: |
+          cargo build --manifest-path updater/Cargo.toml --release --target ${{ matrix.rust_target }}
+          mkdir -p updater-bin
+          cp "updater/target/${{ matrix.rust_target }}/release/ceedoku-updater" updater-bin/ceedoku-updater
 
       - name: Install dependencies
         run: npm ci
@@ -111,6 +156,21 @@ jobs:
         with:
           node-version: 20
           cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Build universal native updater
+        run: |
+          cargo build --manifest-path updater/Cargo.toml --release --target aarch64-apple-darwin
+          cargo build --manifest-path updater/Cargo.toml --release --target x86_64-apple-darwin
+          mkdir -p updater-bin
+          lipo -create \
+            updater/target/aarch64-apple-darwin/release/ceedoku-updater \
+            updater/target/x86_64-apple-darwin/release/ceedoku-updater \
+            -output updater-bin/ceedoku-updater
 
       - name: Install dependencies
         run: npm ci
@@ -152,10 +212,24 @@ jobs:
       - name: Get version
         id: version
         run: |
-          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+          VERSION="$(node -p "require('./package.json').version")"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" != "v${VERSION}" ]]; then
+            echo "Release tag ${GITHUB_REF_NAME} does not match package version v${VERSION}."
+            exit 1
+          fi
 
       - name: Upload combined installers
         uses: actions/upload-artifact@v4
         with:
           name: Ceedoku Client Installers - v${{ steps.version.outputs.version }}
           path: installers/*
+
+      - name: Publish GitHub release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Ceedoku Client v${{ steps.version.outputs.version }}
+          files: installers/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
