@@ -42,7 +42,7 @@ The client is an Electron application. Its main process is responsible for:
 
 The native updater source is in `updater/`. It is compiled separately for each release platform and packaged outside the Electron application bundle so it can remain running while a client update is installed.
 
-Push a version tag matching `package.json` (for example, `v1.2.0`) to build installers and publish them as GitHub Release assets for automatic client updates.
+Push a version tag matching `package.json` (for example, `v1.2.1`) to build installers and publish them as GitHub Release assets for automatic client updates.
 
 ## Development
 
