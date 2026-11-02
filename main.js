@@ -396,15 +396,29 @@ if (!gotTheLock) {
             mainWindow.show();
         });
 
-        const cachePromise = prepareCache();
-
-        await mainWindow.loadFile(
+        const useCachedGame =
+            process.argv.includes(SKIP_UPDATER_ARG);
+        const cachedIndex =
             path.join(
-                __dirname,
-                "assets",
-                "loading.html"
-            )
-        );
+                CURRENT_DIR,
+                "index.html"
+            );
+        const cachePromise = useCachedGame
+            ? Promise.resolve({
+                path: cachedIndex,
+                offline: !fs.existsSync(cachedIndex)
+            })
+            : prepareCache();
+
+        if (!useCachedGame) {
+            await mainWindow.loadFile(
+                path.join(
+                    __dirname,
+                    "assets",
+                    "loading.html"
+                )
+            );
+        }
 
         const result = await cachePromise;
 
@@ -561,8 +575,8 @@ if (!gotTheLock) {
             process.argv.includes(CONTENT_UPDATE_ARG)
         ) {
 
-            prepareCache().then(() => {
-                app.exit(0);
+            prepareCache().then(result => {
+                app.exit(result.offline ? 1 : 0);
             }).catch(error => {
                 console.error(
                     "Failed to update Ceedoku content:",

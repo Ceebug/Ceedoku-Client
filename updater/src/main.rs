@@ -14,6 +14,7 @@ use std::thread;
 use std::time::Duration;
 
 const RELEASES_URL: &str = "https://api.github.com/repos/ceebug/ceedoku-client/releases/latest";
+const GAME_URL: &str = "https://ceedoku.github.io/";
 
 #[derive(Clone, Debug)]
 struct Options {
@@ -22,6 +23,11 @@ struct Options {
     user_data: PathBuf,
     icon_path: PathBuf,
     app_args: Vec<String>,
+}
+
+struct UpdatePlan {
+    client_update: bool,
+    content_update: bool,
 }
 
 #[derive(Deserialize)]
@@ -154,15 +160,22 @@ impl eframe::App for UpdaterApp {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let options = parse_options()?;
+    let update_plan = check_for_updates(&options);
+    if !update_plan.client_update && !update_plan.content_update {
+        launch_game(&options)?;
+        return Ok(());
+    }
+
     let icon = load_icon(&options.icon_path)?;
     let (sender, receiver) = mpsc::channel();
     let worker_options = options.clone();
     let worker_sender = sender.clone();
+    let worker_update_plan = update_plan;
     let launch_state = Arc::new(AtomicBool::new(false));
     let app_launch_state = launch_state.clone();
 
     let worker = thread::spawn(move || {
-        if let Err(error) = run_updates(&worker_options, &worker_sender) {
+        if let Err(error) = run_updates(&worker_options, &worker_sender, worker_update_plan) {
             let _ = worker_sender.send(UiMessage::Error(error.to_string()));
             return;
         }
@@ -192,6 +205,83 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         launch_game(&options)?;
     }
     Ok(())
+}
+
+fn check_for_updates(options: &Options) -> UpdatePlan {
+    let cached_index_path = options
+        .user_data
+        .join("cache")
+        .join("current")
+        .join("index.html");
+    let has_cached_game = cached_index_path.is_file();
+    let client = match Client::builder()
+        .user_agent("Ceedoku-Client-Updater")
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(15))
+        .build()
+    {
+        Ok(client) => client,
+        Err(error) => {
+            eprintln!("Could not prepare update checks: {error}");
+            return UpdatePlan {
+                client_update: false,
+                content_update: !has_cached_game,
+            };
+        }
+    };
+
+    let client_update = match client
+        .get(RELEASES_URL)
+        .send()
+        .and_then(|response| response.error_for_status())
+        .and_then(|response| response.json::<Release>())
+    {
+        Ok(release) => match is_newer_version(
+            &options.app_version,
+            release.tag_name.trim_start_matches('v'),
+        ) {
+            Ok(is_newer) => is_newer,
+            Err(error) => {
+                eprintln!("Could not compare client versions: {error}");
+                false
+            }
+        },
+        Err(error) => {
+            eprintln!("Could not check for a client update: {error}");
+            false
+        }
+    };
+
+    let content_update = match client
+        .get(GAME_URL)
+        .send()
+        .and_then(|response| response.error_for_status())
+        .and_then(|response| response.bytes())
+    {
+        Ok(latest_index) => match fs::read(cached_index_path) {
+            Ok(cached_index) => game_index_changed(Some(&cached_index), &latest_index),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                game_index_changed(None, &latest_index)
+            }
+            Err(error) => {
+                eprintln!("Could not read the cached Ceedoku index: {error}");
+                true
+            }
+        },
+        Err(error) => {
+            eprintln!("Could not check for Ceedoku content updates: {error}");
+            !has_cached_game
+        }
+    };
+
+    UpdatePlan {
+        client_update,
+        content_update,
+    }
+}
+
+fn game_index_changed(cached_index: Option<&[u8]>, latest_index: &[u8]) -> bool {
+    cached_index != Some(latest_index)
 }
 
 fn parse_options() -> Result<Options, Box<dyn std::error::Error>> {
@@ -239,6 +329,7 @@ fn load_icon(path: &Path) -> Result<egui::IconData, Box<dyn std::error::Error>> 
 fn run_updates(
     options: &Options,
     sender: &Sender<UiMessage>,
+    update_plan: UpdatePlan,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let client = Client::builder()
         .user_agent("Ceedoku-Client-Updater")
@@ -246,33 +337,37 @@ fn run_updates(
         .timeout(Duration::from_secs(900))
         .build()?;
 
-    let _ = sender.send(UiMessage::Status(
-        "Checking for a client update...".to_owned(),
-    ));
-    match check_client_update(&client, options, sender) {
-        Ok(()) => {}
-        Err(error) => {
-            eprintln!("Client update could not be completed: {error}");
-            let _ = sender.send(UiMessage::Warning(format!(
-                "Client update unavailable; continuing with the installed version: {error}"
-            )));
-            let _ = sender.send(UiMessage::Status("Preparing Ceedoku...".to_owned()));
+    if update_plan.client_update {
+        let _ = sender.send(UiMessage::Status(
+            "Checking for a client update...".to_owned(),
+        ));
+        match check_client_update(&client, options, sender) {
+            Ok(()) => {}
+            Err(error) => {
+                eprintln!("Client update could not be completed: {error}");
+                let _ = sender.send(UiMessage::Warning(format!(
+                    "Client update unavailable; continuing with the installed version: {error}"
+                )));
+                let _ = sender.send(UiMessage::Status("Preparing Ceedoku...".to_owned()));
+            }
         }
     }
 
-    let _ = sender.send(UiMessage::Status(
-        "Updating Ceedoku game files...".to_owned(),
-    ));
-    let status = Command::new(&options.app_path)
-        .args(&options.app_args)
-        .arg("--ceedoku-content-update")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()?;
+    if update_plan.content_update {
+        let _ = sender.send(UiMessage::Status(
+            "Updating Ceedoku game files...".to_owned(),
+        ));
+        let status = Command::new(&options.app_path)
+            .args(&options.app_args)
+            .arg("--ceedoku-content-update")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()?;
 
-    if !status.success() {
-        return Err(format!("Ceedoku content update exited with {status}").into());
+        if !status.success() {
+            return Err(format!("Ceedoku content update exited with {status}").into());
+        }
     }
     Ok(())
 }
@@ -511,12 +606,19 @@ fn launch_game(options: &Options) -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{asset_name, is_newer_version};
+    use super::{asset_name, game_index_changed, is_newer_version};
 
     #[test]
     fn compares_release_versions_without_tag_prefix() {
         assert!(is_newer_version("1.0.1", "v1.1.0").unwrap());
         assert!(!is_newer_version("v1.1.0", "1.1.0").unwrap());
+    }
+
+    #[test]
+    fn only_updates_game_content_when_the_index_changes() {
+        assert!(game_index_changed(None, b"latest"));
+        assert!(game_index_changed(Some(b"cached"), b"latest"));
+        assert!(!game_index_changed(Some(b"same"), b"same"));
     }
 
     #[test]

@@ -14,20 +14,19 @@ Ceedoku Client packages the Ceedoku web game into a lightweight desktop applicat
 
 ## How it works
 
-The standalone native updater opens before the game and displays the same update window while checking for a newer Ceedoku Client release and updating the Ceedoku game files. Client installers from new version tags are published as GitHub Releases. After updating the client, the updater starts the updated client to refresh the game cache, then opens the game.
+The native updater checks the latest Ceedoku Client release and compares the current game page with the cached copy. It opens its update window only when the client or game files need updating; when both are current, it starts the game directly. Client installers from new version tags are published as GitHub Releases.
 
 On startup, the client:
 
-1. Shows the standalone native update window.
-2. Checks GitHub Releases for a newer client version and installs the matching platform update when available.
-3. Starts a hidden client process to download the current website files.
-4. Opens the game using the cached files.
+1. Checks GitHub Releases for a newer client version and checks whether the cached game page has changed.
+2. Starts the game directly when no update is needed.
+3. Otherwise, shows the standalone native update window, installs the matching platform update when available, and refreshes changed game files through a hidden client process.
 
-If the website update fails but a previous cached version exists, the client uses that cached version instead. The native updater remains visible during both kinds of updates.
+If an update check is unavailable but a previous cached game exists, the client launches using that cached version.
 
 If no cached version exists, the client displays an offline page.
 
-In development, the Electron client uses the local `assets/loading.html` loading screen. Installed releases use the native updater window during startup instead.
+In development, the Electron client uses the local `assets/loading.html` loading screen. Installed releases run the native updater at startup, but show its window only when an update is needed.
 
 ## Project structure
 
