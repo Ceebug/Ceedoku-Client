@@ -4,7 +4,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::env;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -417,11 +417,25 @@ fn run_updates(
         .timeout(Duration::from_secs(900))
         .build()?;
 
+    let phase_count = (if update_plan.client_update { 2 } else { 0 })
+        + (if update_plan.content_update { 1 } else { 0 });
+    let phase_size = if phase_count == 0 {
+        1.0
+    } else {
+        1.0 / phase_count as f32
+    };
+    let mut phase_start = 0.0;
+
     if update_plan.client_update {
+        let download_range = (phase_start, phase_start + phase_size);
+        phase_start = download_range.1;
+        let install_range = (phase_start, phase_start + phase_size);
+        phase_start = install_range.1;
+
         let _ = sender.send(UiMessage::Status(
             "Checking for a client update...".to_owned(),
         ));
-        match check_client_update(&client, options, sender) {
+        match check_client_update(&client, options, sender, download_range, install_range) {
             Ok(()) => {}
             Err(error) => {
                 eprintln!("Client update could not be completed: {error}");
@@ -437,13 +451,28 @@ fn run_updates(
         let _ = sender.send(UiMessage::Status(
             "Updating Ceedoku game files...".to_owned(),
         ));
-        let status = Command::new(&options.app_path)
+        let content_range = (phase_start, 1.0);
+        let mut child = Command::new(&options.app_path)
             .args(&options.app_args)
             .arg("--ceedoku-content-update")
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
+            .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .status()?;
+            .spawn()?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or("could not capture game-file update progress")?;
+        for line in BufReader::new(stdout).lines() {
+            let line = line?;
+            if let Some(progress) = line.strip_prefix("CEEDOKU_CONTENT_PROGRESS:") {
+                let progress = progress.parse::<f32>()?;
+                let progress = progress.clamp(0.0, 1.0);
+                let overall_progress = progress_in_range(content_range, progress);
+                send_update_progress(sender, "Updating game files", overall_progress);
+            }
+        }
+        let status = child.wait()?;
 
         if !status.success() {
             return Err(format!("Ceedoku content update exited with {status}").into());
@@ -456,6 +485,8 @@ fn check_client_update(
     client: &Client,
     options: &Options,
     sender: &Sender<UiMessage>,
+    download_range: (f32, f32),
+    install_range: (f32, f32),
 ) -> Result<(), Box<dyn std::error::Error>> {
     let release: Release = client
         .get(RELEASES_URL)
@@ -493,9 +524,10 @@ fn check_client_update(
         asset.digest.as_deref(),
         total_bytes,
         sender,
+        download_range,
     )?;
 
-    install_update_with_progress(options, &installer, sender)?;
+    install_update_with_progress(options, &installer, sender, install_range)?;
     Ok(())
 }
 
@@ -505,13 +537,18 @@ fn download_asset(
     expected_digest: Option<&str>,
     total_bytes: Option<u64>,
     sender: &Sender<UiMessage>,
+    progress_range: (f32, f32),
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut file = fs::File::create(destination)?;
     let mut hasher = Sha256::new();
     let mut buffer = [0; 64 * 1024];
     let mut downloaded = 0u64;
     let mut next_progress = 0;
-    send_update_progress(sender, "Downloading update", 0.0);
+    send_update_progress(
+        sender,
+        "Downloading update",
+        progress_in_range(progress_range, 0.0),
+    );
 
     loop {
         let count = response.read(&mut buffer)?;
@@ -526,11 +563,19 @@ fn download_asset(
             let phase_progress = total_bytes
                 .map(|total| (downloaded as f64 / total as f64).clamp(0.0, 1.0) as f32)
                 .unwrap_or(0.0);
-            send_update_progress(sender, "Downloading update", phase_progress * 0.5);
+            send_update_progress(
+                sender,
+                "Downloading update",
+                progress_in_range(progress_range, phase_progress),
+            );
             next_progress = downloaded + 256 * 1024;
         }
     }
-    send_update_progress(sender, "Downloading update", 0.5);
+    send_update_progress(
+        sender,
+        "Downloading update",
+        progress_in_range(progress_range, 1.0),
+    );
 
     let actual_digest = format!("{:x}", hasher.finalize());
     if let Some(expected) = expected_digest.and_then(|value| value.strip_prefix("sha256:")) {
@@ -550,10 +595,15 @@ fn send_update_progress(sender: &Sender<UiMessage>, phase: &str, progress: f32) 
     });
 }
 
+fn progress_in_range(range: (f32, f32), progress: f32) -> f32 {
+    range.0 + (range.1 - range.0) * progress.clamp(0.0, 1.0)
+}
+
 fn install_update_with_progress(
     options: &Options,
     installer: &Path,
     sender: &Sender<UiMessage>,
+    progress_range: (f32, f32),
 ) -> Result<(), Box<dyn std::error::Error>> {
     let install_finished = Arc::new(AtomicBool::new(false));
     let reporter_finished = install_finished.clone();
@@ -566,7 +616,7 @@ fn install_update_with_progress(
             send_update_progress(
                 &reporter_sender,
                 "Installing update",
-                0.5 + install_progress,
+                progress_in_range(progress_range, install_progress / 0.49),
             );
             thread::sleep(Duration::from_millis(250));
         }
@@ -578,7 +628,11 @@ fn install_update_with_progress(
         return Err("update progress reporter stopped unexpectedly".into());
     }
     install_result?;
-    send_update_progress(sender, "Installing update", 1.0);
+    send_update_progress(
+        sender,
+        "Installing update",
+        progress_in_range(progress_range, 1.0),
+    );
 
     Ok(())
 }
@@ -730,7 +784,7 @@ fn launch_game(options: &Options) -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{asset_name, game_index_changed, is_newer_version};
+    use super::{asset_name, game_index_changed, is_newer_version, progress_in_range};
 
     #[test]
     fn compares_release_versions_without_tag_prefix() {
@@ -743,6 +797,13 @@ mod tests {
         assert!(game_index_changed(None, b"latest"));
         assert!(game_index_changed(Some(b"cached"), b"latest"));
         assert!(!game_index_changed(Some(b"same"), b"same"));
+    }
+
+    #[test]
+    fn maps_phase_progress_into_the_overall_update_range() {
+        assert_eq!(progress_in_range((0.5, 1.0), 0.0), 0.5);
+        assert_eq!(progress_in_range((0.5, 1.0), 0.5), 0.75);
+        assert_eq!(progress_in_range((0.5, 1.0), 1.0), 1.0);
     }
 
     #[test]

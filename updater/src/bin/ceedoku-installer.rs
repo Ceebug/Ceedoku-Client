@@ -148,10 +148,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let worker = thread::spawn(move || {
         let result = install_payload(&worker_install_dir, &|progress| {
             let _ = worker_sender.send(InstallMessage::Progress(progress));
+        })
+        .and_then(|()| {
+            Command::new(worker_install_dir.join("Ceedoku Client.exe"))
+                .current_dir(&worker_install_dir)
+                .spawn()
+                .map(|_| ())
+                .map_err(Into::into)
         });
         match result {
             Ok(()) => {
-                thread::sleep(Duration::from_millis(500));
                 let _ = worker_sender.send(InstallMessage::Complete);
                 Ok(())
             }

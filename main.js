@@ -9,11 +9,13 @@ const APP_URL = "https://ceedoku.github.io/";
 const CACHE_DIR = path.join(app.getPath("userData"), "cache");
 const CURRENT_DIR = path.join(CACHE_DIR, "current");
 const UPDATE_DIR = path.join(CACHE_DIR, "update");
+const CONTENT_PROGRESS_PREFIX = "CEEDOKU_CONTENT_PROGRESS:";
 
 let mainWindow;
 let pendingCSF = null;
 const CONTENT_UPDATE_ARG = "--ceedoku-content-update";
 const SKIP_UPDATER_ARG = "--ceedoku-skip-updater";
+const isContentUpdate = process.argv.includes(CONTENT_UPDATE_ARG);
 
 
 // Get a CSF file path from command-line arguments
@@ -111,7 +113,7 @@ if (!gotTheLock) {
     });
 
 
-    function download(url) {
+    function download(url, onProgress) {
 
         return new Promise((resolve, reject) => {
 
@@ -128,7 +130,8 @@ if (!gotTheLock) {
                             new URL(
                                 response.headers.location,
                                 url
-                            ).href
+                            ).href,
+                            onProgress
                         )
                     );
 
@@ -147,12 +150,27 @@ if (!gotTheLock) {
                 }
 
                 const chunks = [];
+                const totalBytes = Number(response.headers["content-length"]);
+                let downloadedBytes = 0;
+                let lastReportedProgress = -1;
 
                 response.on("data", chunk => {
                     chunks.push(chunk);
+                    downloadedBytes += chunk.length;
+                    if (onProgress && totalBytes > 0) {
+                        const progress = Math.min(downloadedBytes / totalBytes, 1);
+                        if (
+                            progress === 1 ||
+                            Math.floor(progress * 100) > lastReportedProgress
+                        ) {
+                            lastReportedProgress = Math.floor(progress * 100);
+                            onProgress(progress);
+                        }
+                    }
                 });
 
                 response.on("end", () => {
+                    if (onProgress) onProgress(1);
                     resolve(Buffer.concat(chunks));
                 });
 
@@ -188,6 +206,15 @@ if (!gotTheLock) {
 
 
     async function downloadSite() {
+        const reportProgress = isContentUpdate
+            ? progress => {
+                process.stdout.write(
+                    `${CONTENT_PROGRESS_PREFIX}${Math.max(0, Math.min(progress, 1))}\n`
+                );
+            }
+            : null;
+
+        if (reportProgress) reportProgress(0);
 
         fs.rmSync(UPDATE_DIR, {
             recursive: true,
@@ -202,7 +229,12 @@ if (!gotTheLock) {
         const indexUrl = new URL(APP_URL);
 
         const indexBuffer =
-            await download(indexUrl.href);
+            await download(
+                indexUrl.href,
+                reportProgress
+                    ? progress => reportProgress(progress * 0.1)
+                    : undefined
+            );
 
         const indexPath =
             path.join(
@@ -252,28 +284,28 @@ if (!gotTheLock) {
         // it isn't referenced by a src attribute.
         resources.add("src/js/puzzleGen.js");
 
+        const localResources = [...resources]
+            .filter(Boolean)
+            .map(resource => {
+                const resourceUrl = new URL(resource, indexUrl.href);
+                const localPath = getLocalPath(resourceUrl.href, indexUrl.href);
+                return localPath ? { resourceUrl, localPath } : null;
+            })
+            .filter(Boolean);
 
-        for (const resource of resources) {
-
-            if (!resource) continue;
-
-            const resourceUrl =
-                new URL(
-                    resource,
-                    indexUrl.href
-                );
-
-            const localPath =
-                getLocalPath(
-                    resourceUrl.href,
-                    indexUrl.href
-                );
-
-            if (!localPath) continue;
+        for (const [index, { resourceUrl, localPath }] of localResources.entries()) {
 
             const data =
                 await download(
-                    resourceUrl.href
+                    resourceUrl.href,
+                    reportProgress
+                        ? progress => reportProgress(
+                            Math.min(
+                                0.99,
+                                0.1 + 0.9 * (index + progress) / localResources.length
+                            )
+                        )
+                        : undefined
                 );
 
             fs.mkdirSync(
@@ -300,6 +332,7 @@ if (!gotTheLock) {
             UPDATE_DIR,
             CURRENT_DIR
         );
+        if (reportProgress) reportProgress(1);
 
     }
 
