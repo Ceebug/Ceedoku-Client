@@ -40,9 +40,21 @@ The client is an Electron application. Its main process is responsible for:
 * Managing the application's single-instance lock
 * Providing an offline fallback
 
-The native updater source is in `updater/`. It is compiled separately for each release platform and packaged outside the Electron application bundle so it can remain running while a client update is installed.
+The native updater source is in `updater/`. It is compiled separately for each release platform and packaged outside the Electron application bundle so it can remain running while a client update is installed. Windows releases use a Rust installer that embeds the packaged client and updater, shows installation progress, and installs per-user; Linux AppImage and macOS DMG releases continue to use electron-builder.
 
-Push a version tag matching `package.json` (for example, `v1.2.1`) to build installers and publish them as GitHub Release assets for automatic client updates.
+### Releasing
+
+The GitHub Actions workflow builds Windows, Linux, and macOS installers. A manual workflow run (`workflow_dispatch`) uploads the installers as workflow artifacts for testing. Pushing a tag matching `package.json` also publishes those installers as a GitHub Release; the tag must be `v<version>` (for example, `v1.3.0`).
+
+To release after committing the changes:
+
+```bash
+git push origin main
+git tag v1.3.0
+git push origin v1.3.0
+```
+
+The Windows job packages the Electron app directory, embeds it with the native updater into the Rust installer, then uploads the architecture-specific installer. Linux and macOS jobs continue to produce AppImage and DMG installers. The package job combines all platform installers and attaches them to the GitHub Release for pushed version tags.
 
 ## Development
 
@@ -51,7 +63,7 @@ Push a version tag matching `package.json` (for example, `v1.2.1`) to build inst
 - [Node.js](https://nodejs.org/)
 - [npm](https://www.npmjs.com/)
 - [Electron](https://www.electronjs.org/)
-- [Rust and Cargo](https://www.rust-lang.org/tools/install) (for building the native updater)
+- [Rust and Cargo](https://www.rust-lang.org/tools/install) (for building the native updater and Windows installer)
 
 Clone the repository:
 

@@ -53,13 +53,19 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build
-        run: npx electron-builder --win nsis --${{ matrix.arch }} --publish never
+      - name: Package application
+        run: npx electron-builder --win dir --${{ matrix.arch }} --publish never
 
-      - name: Rename installer
-        shell: bash
+      - name: Build Rust installer
+        shell: pwsh
         run: |
-          mv dist/*.exe "dist/${{ matrix.filename }}"
+          $payload = Join-Path $PWD "dist/installer-payload.zip"
+          $archSuffix = if ("${{ matrix.arch }}" -eq "x64") { "" } else { "-${{ matrix.arch }}" }
+          $appDirectory = "dist/win$archSuffix-unpacked"
+          Compress-Archive -Path "$appDirectory/*" -DestinationPath $payload -CompressionLevel Optimal
+          $env:CEEDOKU_INSTALLER_PAYLOAD = $payload
+          cargo build --manifest-path updater/Cargo.toml --release --target ${{ matrix.rust_target }} --features installer --bin ceedoku-installer
+          Copy-Item "updater/target/${{ matrix.rust_target }}/release/ceedoku-installer.exe" "dist/${{ matrix.filename }}"
 
       - name: Upload installer
         uses: actions/upload-artifact@v4

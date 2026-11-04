@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const RELEASES_URL: &str = "https://api.github.com/repos/ceebug/ceedoku-client/releases/latest";
 const GAME_URL: &str = "https://ceedoku.github.io/";
@@ -45,6 +45,7 @@ struct ReleaseAsset {
 
 enum UiMessage {
     Status(String),
+    Progress { status: String, progress: f32 },
     Warning(String),
     Complete,
     Error(String),
@@ -56,6 +57,7 @@ struct UpdaterApp {
     status: String,
     error: Option<String>,
     warning: Option<String>,
+    progress: Option<f32>,
     finished: bool,
 }
 
@@ -67,6 +69,7 @@ impl UpdaterApp {
             status: "Checking for updates...".to_owned(),
             error: None,
             warning: None,
+            progress: None,
             finished: false,
         }
     }
@@ -85,6 +88,10 @@ impl eframe::App for UpdaterApp {
         while let Ok(message) = self.receiver.try_recv() {
             match message {
                 UiMessage::Status(status) => self.status = status,
+                UiMessage::Progress { status, progress } => {
+                    self.status = status;
+                    self.progress = Some(progress.clamp(0.0, 1.0));
+                }
                 UiMessage::Warning(warning) => self.warning = Some(warning),
                 UiMessage::Complete => {
                     self.launch_state.store(true, Ordering::Relaxed);
@@ -137,19 +144,27 @@ impl eframe::App for UpdaterApp {
                             });
                         }
                     } else {
-                        ui.add(egui::Spinner::new().size(26.0));
-                        ui.add_space(12.0);
-                        ui.label(
-                            egui::RichText::new(&self.status)
-                                .color(egui::Color32::from_rgb(149, 164, 176)),
-                        );
-                        if let Some(warning) = &self.warning {
-                            ui.add_space(8.0);
+                        ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
+                            if let Some(progress) = self.progress {
+                                ui.add(
+                                    egui::ProgressBar::new(progress)
+                                        .fill(egui::Color32::from_rgb(115, 167, 255))
+                                        .desired_height(18.0),
+                                );
+                                ui.add_space(16.0);
+                            }
                             ui.label(
-                                egui::RichText::new(warning)
-                                    .color(egui::Color32::from_rgb(255, 190, 130)),
+                                egui::RichText::new(&self.status)
+                                    .color(egui::Color32::from_rgb(149, 164, 176)),
                             );
-                        }
+                            if let Some(warning) = &self.warning {
+                                ui.add_space(8.0);
+                                ui.label(
+                                    egui::RichText::new(warning)
+                                        .color(egui::Color32::from_rgb(255, 190, 130)),
+                                );
+                            }
+                        });
                     }
                 });
             });
@@ -159,6 +174,17 @@ impl eframe::App for UpdaterApp {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args: Vec<String> = env::args().skip(1).collect();
+    if args.iter().any(|argument| argument == "--ui-test") {
+        let icon_path = args
+            .windows(2)
+            .find(|pair| pair[0] == "--icon")
+            .map(|pair| PathBuf::from(&pair[1]))
+            .ok_or("--ui-test requires --icon <path>")?;
+        run_ui_test(&icon_path)?;
+        return Ok(());
+    }
+
     let options = parse_options()?;
     let update_plan = check_for_updates(&options);
     if !update_plan.client_update && !update_plan.content_update {
@@ -183,11 +209,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let native_options = eframe::NativeOptions {
+        centered: true,
         viewport: egui::ViewportBuilder::default()
             .with_title("Ceedoku is updating")
             .with_inner_size([440.0, 250.0])
-            .with_min_inner_size([400.0, 230.0])
+            .with_min_inner_size([440.0, 250.0])
+            .with_max_inner_size([440.0, 250.0])
             .with_resizable(false)
+            .with_maximize_button(false)
             .with_icon(icon),
         ..Default::default()
     };
@@ -204,6 +233,57 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if launch_state.load(Ordering::Relaxed) {
         launch_game(&options)?;
     }
+    Ok(())
+}
+
+fn run_ui_test(icon_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let icon = load_icon(icon_path)?;
+    let (sender, receiver) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        let _ = sender.send(UiMessage::Status("Downloading update - 0%".to_owned()));
+        for downloaded in 0..=100 {
+            let progress = downloaded as f32 / 100.0;
+            let _ = sender.send(UiMessage::Progress {
+                status: format!("Downloading update - {:.0}%", progress * 50.0),
+                progress: progress * 0.5,
+            });
+            thread::sleep(Duration::from_millis(40));
+        }
+        for installed in 0..=100 {
+            let progress = installed as f32 / 100.0;
+            let overall_progress = 0.5 + progress * 0.5;
+            let _ = sender.send(UiMessage::Progress {
+                status: format!("Installing update - {:.0}%", overall_progress * 100.0),
+                progress: overall_progress,
+            });
+            thread::sleep(Duration::from_millis(80));
+        }
+    });
+
+    let launch_state = Arc::new(AtomicBool::new(false));
+    let app_launch_state = launch_state.clone();
+    let native_options = eframe::NativeOptions {
+        centered: true,
+        viewport: egui::ViewportBuilder::default()
+            .with_title("Ceedoku Updater UI Test")
+            .with_inner_size([440.0, 250.0])
+            .with_min_inner_size([440.0, 250.0])
+            .with_max_inner_size([440.0, 250.0])
+            .with_resizable(false)
+            .with_maximize_button(false)
+            .with_icon(icon),
+        ..Default::default()
+    };
+
+    let result = eframe::run_native(
+        "Ceedoku Updater UI Test",
+        native_options,
+        Box::new(move |_| Ok(Box::new(UpdaterApp::new(receiver, app_launch_state)))),
+    );
+    if worker.join().is_err() {
+        return Err("updater UI test worker stopped unexpectedly".into());
+    }
+    result?;
     Ok(())
 }
 
@@ -395,44 +475,43 @@ fn check_client_update(
         .find(|asset| asset.name == asset_name)
         .ok_or_else(|| format!("Release {} has no {asset_name} asset", release.tag_name))?;
 
-    let _ = sender.send(UiMessage::Status(format!(
-        "Downloading Ceedoku Client {latest}..."
-    )));
     let response = client
         .get(&asset.browser_download_url)
         .send()?
         .error_for_status()?;
+    let total_bytes = response.content_length().filter(|total| *total > 0);
+    let _ = sender.send(UiMessage::Progress {
+        status: "Downloading update - 0%".to_owned(),
+        progress: 0.0,
+    });
     let update_dir = options.user_data.join("updates");
     fs::create_dir_all(&update_dir)?;
     let installer = update_dir.join(&asset.name);
     download_asset(
         response,
         &installer,
-        &asset.name,
         asset.digest.as_deref(),
+        total_bytes,
         sender,
     )?;
 
-    let _ = sender.send(UiMessage::Status(
-        "Installing the Ceedoku Client update...".to_owned(),
-    ));
-    install_update(options, &installer)?;
+    install_update_with_progress(options, &installer, sender)?;
     Ok(())
 }
 
 fn download_asset(
     mut response: reqwest::blocking::Response,
     destination: &Path,
-    asset_name: &str,
     expected_digest: Option<&str>,
+    total_bytes: Option<u64>,
     sender: &Sender<UiMessage>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let total_bytes = response.content_length();
     let mut file = fs::File::create(destination)?;
     let mut hasher = Sha256::new();
     let mut buffer = [0; 64 * 1024];
     let mut downloaded = 0u64;
-    let mut next_status = 16 * 1024 * 1024;
+    let mut next_progress = 0;
+    send_update_progress(sender, "Downloading update", 0.0);
 
     loop {
         let count = response.read(&mut buffer)?;
@@ -443,17 +522,15 @@ fn download_asset(
         hasher.update(&buffer[..count]);
         downloaded += count as u64;
 
-        if downloaded >= next_status {
-            let progress = total_bytes
-                .map(|total| format!(" ({:.0}%)", downloaded as f64 * 100.0 / total as f64))
-                .unwrap_or_default();
-            let _ = sender.send(UiMessage::Status(format!(
-                "Downloading {asset_name}{}...",
-                progress
-            )));
-            next_status += 16 * 1024 * 1024;
+        if downloaded >= next_progress {
+            let phase_progress = total_bytes
+                .map(|total| (downloaded as f64 / total as f64).clamp(0.0, 1.0) as f32)
+                .unwrap_or(0.0);
+            send_update_progress(sender, "Downloading update", phase_progress * 0.5);
+            next_progress = downloaded + 256 * 1024;
         }
     }
+    send_update_progress(sender, "Downloading update", 0.5);
 
     let actual_digest = format!("{:x}", hasher.finalize());
     if let Some(expected) = expected_digest.and_then(|value| value.strip_prefix("sha256:")) {
@@ -462,6 +539,47 @@ fn download_asset(
             return Err("Downloaded client update failed its SHA-256 check".into());
         }
     }
+    Ok(())
+}
+
+fn send_update_progress(sender: &Sender<UiMessage>, phase: &str, progress: f32) {
+    let progress = progress.clamp(0.0, 1.0);
+    let _ = sender.send(UiMessage::Progress {
+        status: format!("{phase} - {:.0}%", progress * 100.0),
+        progress,
+    });
+}
+
+fn install_update_with_progress(
+    options: &Options,
+    installer: &Path,
+    sender: &Sender<UiMessage>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let install_finished = Arc::new(AtomicBool::new(false));
+    let reporter_finished = install_finished.clone();
+    let reporter_sender = sender.clone();
+    let reporter = thread::spawn(move || {
+        let started = Instant::now();
+        while !reporter_finished.load(Ordering::Relaxed) {
+            let elapsed_seconds = started.elapsed().as_secs_f32();
+            let install_progress = 0.49 * (1.0 - (-elapsed_seconds / 30.0).exp());
+            send_update_progress(
+                &reporter_sender,
+                "Installing update",
+                0.5 + install_progress,
+            );
+            thread::sleep(Duration::from_millis(250));
+        }
+    });
+
+    let install_result = install_update(options, installer);
+    install_finished.store(true, Ordering::Relaxed);
+    if reporter.join().is_err() {
+        return Err("update progress reporter stopped unexpectedly".into());
+    }
+    install_result?;
+    send_update_progress(sender, "Installing update", 1.0);
+
     Ok(())
 }
 
@@ -490,9 +608,15 @@ fn asset_name(os: &str, architecture: &str) -> Option<&'static str> {
 }
 
 #[cfg(target_os = "windows")]
-fn install_update(_options: &Options, installer: &Path) -> Result<(), Box<dyn std::error::Error>> {
+fn install_update(options: &Options, installer: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let install_dir = options
+        .app_path
+        .parent()
+        .ok_or("could not locate the installed client directory")?;
     let status = Command::new(installer)
         .arg("/S")
+        .arg("--install-dir")
+        .arg(install_dir)
         .stdin(Stdio::null())
         .status()?;
     require_success(status)

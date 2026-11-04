@@ -11,6 +11,7 @@ const binaryPath = path.join(root, "updater-bin", binaryName);
 const sourcePaths = [
     path.join(root, "updater", "Cargo.toml"),
     path.join(root, "updater", "Cargo.lock"),
+    path.join(root, "updater", "build.rs"),
     path.join(root, "updater", "src", "main.rs")
 ];
 const binaryExists = fs.existsSync(binaryPath);
