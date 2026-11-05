@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const RELEASES_URL: &str = "https://api.github.com/repos/ceebug/ceedoku-client/releases/latest";
 const GAME_URL: &str = "https://ceedoku.github.io/";
@@ -605,29 +605,18 @@ fn install_update_with_progress(
     sender: &Sender<UiMessage>,
     progress_range: (f32, f32),
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let install_finished = Arc::new(AtomicBool::new(false));
-    let reporter_finished = install_finished.clone();
-    let reporter_sender = sender.clone();
-    let reporter = thread::spawn(move || {
-        let started = Instant::now();
-        while !reporter_finished.load(Ordering::Relaxed) {
-            let elapsed_seconds = started.elapsed().as_secs_f32();
-            let install_progress = 0.49 * (1.0 - (-elapsed_seconds / 30.0).exp());
-            send_update_progress(
-                &reporter_sender,
-                "Installing update",
-                progress_in_range(progress_range, install_progress / 0.49),
-            );
-            thread::sleep(Duration::from_millis(250));
-        }
-    });
-
-    let install_result = install_update(options, installer);
-    install_finished.store(true, Ordering::Relaxed);
-    if reporter.join().is_err() {
-        return Err("update progress reporter stopped unexpectedly".into());
-    }
-    install_result?;
+    send_update_progress(
+        sender,
+        "Installing update",
+        progress_in_range(progress_range, 0.0),
+    );
+    install_update(options, installer, &mut |progress| {
+        send_update_progress(
+            sender,
+            "Installing update",
+            progress_in_range(progress_range, progress),
+        );
+    })?;
     send_update_progress(
         sender,
         "Installing update",
@@ -662,36 +651,98 @@ fn asset_name(os: &str, architecture: &str) -> Option<&'static str> {
 }
 
 #[cfg(target_os = "windows")]
-fn install_update(options: &Options, installer: &Path) -> Result<(), Box<dyn std::error::Error>> {
+fn install_update(
+    options: &Options,
+    installer: &Path,
+    report_progress: &mut dyn FnMut(f32),
+) -> Result<(), Box<dyn std::error::Error>> {
     let install_dir = options
         .app_path
         .parent()
         .ok_or("could not locate the installed client directory")?;
-    let status = Command::new(installer)
+    let mut child = Command::new(installer)
         .arg("/S")
         .arg("--install-dir")
         .arg(install_dir)
+        .arg("--progress-stdout")
         .stdin(Stdio::null())
-        .status()?;
-    require_success(status)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or("could not capture installer progress")?;
+    let mut progress_error = None;
+    for line in BufReader::new(stdout).lines() {
+        let line = line?;
+        if let Some(value) = line.strip_prefix("CEEDOKU_INSTALL_PROGRESS:") {
+            match value.parse::<f32>() {
+                Ok(progress) if progress.is_finite() => report_progress(progress.clamp(0.0, 1.0)),
+                _ => progress_error = Some("installer reported invalid progress"),
+            }
+        }
+    }
+    require_success(child.wait()?)?;
+    if let Some(error) = progress_error {
+        return Err(error.into());
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
-fn install_update(options: &Options, installer: &Path) -> Result<(), Box<dyn std::error::Error>> {
+fn install_update(
+    options: &Options,
+    installer: &Path,
+    report_progress: &mut dyn FnMut(f32),
+) -> Result<(), Box<dyn std::error::Error>> {
     use std::os::unix::fs::PermissionsExt;
 
     let current = env::var_os("APPIMAGE")
         .map(PathBuf::from)
         .unwrap_or_else(|| options.app_path.clone());
     let staging = current.with_extension("AppImage.update");
-    fs::copy(installer, &staging)?;
+    copy_file_with_progress(installer, &staging, report_progress)?;
     fs::set_permissions(&staging, fs::Permissions::from_mode(0o755))?;
     fs::rename(staging, current)?;
+    report_progress(1.0);
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn copy_file_with_progress(
+    source: &Path,
+    destination: &Path,
+    report_progress: &mut dyn FnMut(f32),
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut input = fs::File::open(source)?;
+    let total_bytes = input.metadata()?.len();
+    let mut output = fs::File::create(destination)?;
+    let mut copied_bytes = 0u64;
+    let mut buffer = [0; 128 * 1024];
+
+    report_progress(0.0);
+    loop {
+        let count = input.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        output.write_all(&buffer[..count])?;
+        copied_bytes += count as u64;
+        if total_bytes > 0 {
+            report_progress((copied_bytes as f64 / total_bytes as f64) as f32 * 0.99);
+        }
+    }
+    output.flush()?;
     Ok(())
 }
 
 #[cfg(target_os = "macos")]
-fn install_update(options: &Options, installer: &Path) -> Result<(), Box<dyn std::error::Error>> {
+fn install_update(
+    options: &Options,
+    installer: &Path,
+    _report_progress: &mut dyn FnMut(f32),
+) -> Result<(), Box<dyn std::error::Error>> {
     let mount = options.user_data.join("updates").join("mount");
     fs::create_dir_all(&mount)?;
     let attach = Command::new("hdiutil")

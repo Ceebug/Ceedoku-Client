@@ -138,7 +138,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .any(|arg| arg.eq_ignore_ascii_case("/S") || arg == "--silent")
     {
-        return install_payload(&install_dir, &|_| {});
+        if !args.iter().any(|arg| arg == "--progress-stdout") {
+            return install_payload(&install_dir, &mut |_| Ok(()));
+        }
+        let stdout = std::io::stdout();
+        let mut output = stdout.lock();
+        return install_payload(&install_dir, &mut |progress| {
+            writeln!(output, "CEEDOKU_INSTALL_PROGRESS:{progress}")?;
+            output.flush()?;
+            Ok(())
+        });
     }
 
     let icon = load_icon(INSTALLER_ICON)?;
@@ -146,8 +155,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let worker_sender = sender.clone();
     let worker_install_dir = install_dir.clone();
     let worker = thread::spawn(move || {
-        let result = install_payload(&worker_install_dir, &|progress| {
+        let result = install_payload(&worker_install_dir, &mut |progress| {
             let _ = worker_sender.send(InstallMessage::Progress(progress));
+            Ok(())
         })
         .and_then(|()| {
             Command::new(worker_install_dir.join("Ceedoku Client.exe"))
@@ -248,7 +258,7 @@ fn load_icon(bytes: &[u8]) -> Result<egui::IconData, Box<dyn std::error::Error>>
 
 fn install_payload(
     install_dir: &Path,
-    report_progress: &dyn Fn(f32),
+    report_progress: &mut dyn FnMut(f32) -> Result<(), Box<dyn std::error::Error>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if INSTALLER_PAYLOAD.is_empty() {
         return Err(
@@ -270,6 +280,7 @@ fn install_payload(
     remove_directory_if_present(&stage)?;
     fs::create_dir_all(&stage)?;
 
+    report_progress(0.0)?;
     let result = extract_payload(&stage, report_progress);
     if let Err(error) = result {
         remove_directory_if_present(&stage)?;
@@ -278,7 +289,6 @@ fn install_payload(
 
     let uninstaller = stage.join("Uninstall Ceedoku.ps1");
     fs::write(&uninstaller, uninstaller_script(install_dir))?;
-    report_progress(0.92);
 
     if install_dir.exists() {
         fs::rename(install_dir, &backup)?;
@@ -298,13 +308,13 @@ fn install_payload(
     }
     setup_result?;
     remove_directory_if_present(&backup)?;
-    report_progress(1.0);
+    report_progress(1.0)?;
     Ok(())
 }
 
 fn extract_payload(
     destination: &Path,
-    report_progress: &dyn Fn(f32),
+    report_progress: &mut dyn FnMut(f32) -> Result<(), Box<dyn std::error::Error>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut archive = ZipArchive::new(std::io::Cursor::new(INSTALLER_PAYLOAD))?;
     let mut total_bytes = 0u64;
@@ -342,7 +352,7 @@ fn extract_payload(
             }
             output.write_all(&buffer[..count])?;
             extracted_bytes += count as u64;
-            report_progress(0.01 + (extracted_bytes as f64 / total_bytes as f64) as f32 * 0.89);
+            report_progress((extracted_bytes as f64 / total_bytes as f64) as f32 * 0.99)?;
         }
     }
     Ok(())
